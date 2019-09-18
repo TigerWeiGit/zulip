@@ -119,6 +119,8 @@ js_rules = RuleList(
          'bad_lines': ['subject="foo"', ' MAX_SUBJECT_LEN']},
         {'pattern': r'[^_]function\(',
          'description': 'The keyword "function" should be followed by a space'},
+        {'pattern': 'msgid|MSGID',
+         'description': 'Avoid using "msgid" as a variable name; use "message_id" instead.'},
         {'pattern': r'.*blueslip.warning\(.*',
          'description': 'The module blueslip has no function warning, try using blueslip.warn'},
         {'pattern': '[)]{$',
@@ -227,6 +229,10 @@ python_rules = RuleList(
              'zerver/lib/',
              'zerver/tests/',
              'zerver/views/'])},
+        {'pattern': 'msgid|MSGID',
+         'exclude': set(['tools/check-capitalization',
+                         'tools/i18n/tagmessages']),
+         'description': 'Avoid using "msgid" as a variable name; use "message_id" instead.'},
         {'pattern': '^(?!#)@login_required',
          'description': '@login_required is unsupported; use @zulip_login_required',
          'good_lines': ['@zulip_login_required', '# foo @login_required'],
@@ -395,10 +401,6 @@ python_rules = RuleList(
              # how most instances are written, but better to exclude something than nothing
              ('zerver/lib/actions.py', 'stream = get_stream(stream_name, realm)'),
              ('zerver/lib/actions.py', 'get_stream(admin_realm_signup_notifications_stream, admin_realm)'),
-             # Here we need get_stream to access streams you've since unsubscribed from.
-             ('zerver/views/messages.py', 'stream = get_stream(operand, self.user_profile.realm)'),
-             # Use stream_id to exclude mutes.
-             ('zerver/views/messages.py', 'stream_id = get_stream(stream_name, user_profile.realm).id'),
          ]),
          'description': 'Please use access_stream_by_*() to fetch Stream objects',
          },
@@ -583,7 +585,7 @@ prose_style_rules = [
      'description': "!!! warning is invalid; it's spelled '!!! warn'"},
     {'pattern': 'Terms of service',
      'description': "The S in Terms of Service is capitalized"},
-    {'pattern': '[^-_]botserver(?!rc)|bot server',
+    {'pattern': '[^-_p]botserver(?!rc)|bot server',
      'description': "Use Botserver instead of botserver or bot server."},
     *comma_whitespace_rule,
 ]  # type: List[Rule]

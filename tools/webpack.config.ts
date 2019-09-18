@@ -1,4 +1,4 @@
-import { resolve } from 'path';
+import { basename, resolve } from 'path';
 import * as BundleTracker from 'webpack-bundle-tracker';
 import * as webpack from 'webpack';
 // The devServer member of webpack.Configuration is managed by the
@@ -6,6 +6,9 @@ import * as webpack from 'webpack';
 import * as _webpackDevServer from 'webpack-dev-server';
 import { getExposeLoaders, cacheLoader } from './webpack-helpers';
 import * as MiniCssExtractPlugin from 'mini-css-extract-plugin';
+import * as OptimizeCssAssetsPlugin from 'optimize-css-assets-webpack-plugin';
+import * as CleanCss from 'clean-css';
+import * as TerserPlugin from 'terser-webpack-plugin';
 
 const assets = require('./webpack.assets.json');
 
@@ -13,6 +16,7 @@ export default (env?: string): webpack.Configuration[] => {
     const production: boolean = env === "production";
     const publicPath = production ? '/static/webpack-bundles/' : '/webpack/';
     const config: webpack.Configuration = {
+        name: "frontend",
         mode: production ? "production" : "development",
         context: resolve(__dirname, "../"),
         entry: assets,
@@ -67,9 +71,10 @@ export default (env?: string): webpack.Configuration[] => {
                         },
                     ],
                 },
-                // sass / scss loader
+                // scss loader
                 {
-                    test: /\.(sass|scss)$/,
+                    test: /\.scss$/,
+                    include: resolve(__dirname, '../static/styles'),
                     use: [
                         {
                             loader: MiniCssExtractPlugin.loader,
@@ -81,11 +86,12 @@ export default (env?: string): webpack.Configuration[] => {
                         {
                             loader: 'css-loader',
                             options: {
+                                importLoaders: 1,
                                 sourceMap: true,
                             },
                         },
                         {
-                            loader: 'sass-loader',
+                            loader: 'postcss-loader',
                             options: {
                                 sourceMap: true,
                             },
@@ -131,6 +137,44 @@ export default (env?: string): webpack.Configuration[] => {
         // We prefer it over eval since eval has trouble setting
         // breakpoints in chrome.
         devtool: production ? 'source-map' : 'cheap-module-source-map',
+        optimization: {
+            minimizer: [
+                // Based on a comment in NMFR/optimize-css-assets-webpack-plugin#10.
+                // Can be simplified when NMFR/optimize-css-assets-webpack-plugin#87
+                // is fixed.
+                new OptimizeCssAssetsPlugin({
+                    cssProcessor: {
+                        process: async (css, options) => {
+                            const filename = basename(options.to);
+                            const result = await new CleanCss(options).minify({
+                                [filename]: {
+                                    styles: css,
+                                    sourceMap: options.map.prev,
+                                },
+                            });
+                            for (const warning of result.warnings) {
+                                console.warn(warning);
+                            }
+                            return {
+                                css: result.styles + `\n/*# sourceMappingURL=${filename}.map */`,
+                                map: result.sourceMap,
+                            };
+                        },
+                    },
+                    cssProcessorOptions: {
+                        map: {},
+                        returnPromise: true,
+                        sourceMap: true,
+                        sourceMapInlineSources: true,
+                    },
+                }),
+                new TerserPlugin({
+                    cache: true,
+                    parallel: true,
+                    sourceMap: true,
+                }),
+            ],
+        },
     };
 
     // Expose Global variables for third party libraries to webpack modules
@@ -192,9 +236,6 @@ export default (env?: string): webpack.Configuration[] => {
         config.devServer = {
             clientLogLevel: "error",
             stats: "errors-only",
-            watchOptions: {
-                poll: 100,
-            },
         };
     }
 

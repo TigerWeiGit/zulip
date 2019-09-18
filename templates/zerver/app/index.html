@@ -6,18 +6,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 {% endblock %}
 
-{% block page_params %}
-{# Insert parameters, which have been encoded with JSONEncoderForHTML. #}
-<script nonce="{{ csp_nonce }}">
-    {% autoescape off %}
-    var page_params = {{ page_params }};
-    {% endautoescape %}
-</script>
-{% endblock %}
-
 {% block commonjs %}
-{{ render_bundle('app', attrs='nonce="%s"' % (csp_nonce,)) }}
-{{ render_bundle('katex', attrs='nonce="%s"' % (csp_nonce,)) }}
+{{ bundle('app') }}
+{{ bundle('katex') }}
 {% endblock %}
 
 {% block customhead %}

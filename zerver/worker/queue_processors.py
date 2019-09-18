@@ -44,7 +44,7 @@ from zerver.lib.redis_utils import get_redis_client
 from zerver.context_processors import common_context
 from zerver.lib.outgoing_webhook import do_rest_call, get_outgoing_webhook_service_handler
 from zerver.models import get_bot_services, RealmAuditLog
-from zulip_bots.lib import extract_query_without_mention
+from zulip_bots.lib import ExternalBotHandler, extract_query_without_mention
 from zerver.lib.bot_lib import EmbeddedBotHandler, get_bot_handler, EmbeddedBotQuitException
 from zerver.lib.exceptions import RateLimited
 from zerver.lib.export import export_realm_wrapper
@@ -222,23 +222,24 @@ class ConfirmationEmailWorker(QueueProcessingWorker):
         logger.info("Sending invitation for realm %s to %s" % (referrer.realm.string_id, invitee.email))
         do_send_confirmation_email(invitee, referrer)
 
-        # queue invitation reminder for two days from now.
-        link = create_confirmation_link(invitee, referrer.realm.host, Confirmation.INVITATION)
-        context = common_context(referrer)
-        context.update({
-            'activate_url': link,
-            'referrer_name': referrer.full_name,
-            'referrer_email': referrer.email,
-            'referrer_realm_name': referrer.realm.name,
-        })
-        send_future_email(
-            "zerver/emails/invitation_reminder",
-            referrer.realm,
-            to_emails=[invitee.email],
-            from_address=FromAddress.tokenized_no_reply_address(),
-            language=referrer.realm.default_language,
-            context=context,
-            delay=datetime.timedelta(days=2))
+        # queue invitation reminder
+        if settings.INVITATION_LINK_VALIDITY_DAYS >= 4:
+            link = create_confirmation_link(invitee, referrer.realm.host, Confirmation.INVITATION)
+            context = common_context(referrer)
+            context.update({
+                'activate_url': link,
+                'referrer_name': referrer.full_name,
+                'referrer_email': referrer.delivery_email,
+                'referrer_realm_name': referrer.realm.name,
+            })
+            send_future_email(
+                "zerver/emails/invitation_reminder",
+                referrer.realm,
+                to_emails=[invitee.email],
+                from_address=FromAddress.tokenized_no_reply_address(),
+                language=referrer.realm.default_language,
+                context=context,
+                delay=datetime.timedelta(days=settings.INVITATION_LINK_VALIDITY_DAYS - 2))
 
 @assign_queue('user_activity')
 class UserActivityWorker(QueueProcessingWorker):
@@ -586,7 +587,7 @@ class EmbeddedBotWorker(QueueProcessingWorker):
                 if event['trigger'] == 'mention':
                     message['content'] = extract_query_without_mention(
                         message=message,
-                        client=self.get_bot_api_client(user_profile),
+                        client=cast(ExternalBotHandler, self.get_bot_api_client(user_profile)),
                     )
                     assert message['content'] is not None
                 bot_handler.handle_message(

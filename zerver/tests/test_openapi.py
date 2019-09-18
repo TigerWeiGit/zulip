@@ -178,6 +178,11 @@ class OpenAPIArgumentsTest(ZulipTestCase):
         '/users/me/alert_words',
         '/users/me/status',
         '/messages/matches_narrow',
+        '/dev_fetch_api_key',
+        '/dev_list_users',
+        '/fetch_api_key',
+        '/fetch_google_client_id',
+        '/get_auth_backends',
         '/settings',
         '/submessage',
         '/attachments',
@@ -196,12 +201,15 @@ class OpenAPIArgumentsTest(ZulipTestCase):
         '/invites',
         '/invites/multiuse',
         '/bots',
+        # Used for desktop app to test connectivity.
+        '/generate_204',
         # Mobile-app only endpoints
         '/users/me/android_gcm_reg_id',
         '/users/me/apns_device_token',
         # Regex based urls
         '/realm/domains/{domain}',
         '/realm/profile_fields/{field_id}',
+        '/realm/subdomain/{subdomain}',
         '/users/{user_id}/reactivate',
         '/users/{user_id}',
         '/bots/{bot_id}/api_key/regenerate',
@@ -232,18 +240,8 @@ class OpenAPIArgumentsTest(ZulipTestCase):
         '/users/me/subscriptions/muted_topics',
         # List of flags is broader in actual code; fix is to just add them
         '/settings/notifications',
-        # Endpoint is documented; parameters aren't detected properly.
-        '/realm/filters',
-        '/realm/filters/{filter_id}',
         # Docs need update for subject -> topic migration
         '/messages/{message_id}',
-        # stream_id parameter incorrectly appears in both URL and endpoint parameters?
-        '/streams/{stream_id}',
-        # pattern starts with /api/v1 and thus fails reverse mapping test.
-        '/dev_fetch_api_key',
-        '/server_settings',
-        # Because of the unnamed capturing group, this fails the reverse mapping test.
-        '/users/{email}/presence',
     ])
 
     def convert_regex_to_url_pattern(self, regex_pattern: str) -> str:
@@ -254,6 +252,19 @@ class OpenAPIArgumentsTest(ZulipTestCase):
                 1. /messages/{message_id} <-> r'^messages/(?P<message_id>[0-9]+)$'
                 2. /events <-> r'^events$'
         """
+
+        # TODO: Probably we should be able to address the below
+        # through alternative solutions (e.g. reordering urls.py
+        # entries or similar url organization, but for now these let
+        # us test more endpoints and so are worth doing).
+        me_pattern = '/(?!me/)'
+        if me_pattern in regex_pattern:
+            # Remove the exclude-me pattern if present.
+            regex_pattern = regex_pattern.replace(me_pattern, "/")
+        if '[^/]*' in regex_pattern:
+            # Handle the presence-email code which has a non-slashes syntax.
+            regex_pattern = regex_pattern.replace('[^/]*', '.*')
+
         self.assertTrue(regex_pattern.startswith("^"))
         self.assertTrue(regex_pattern.endswith("$"))
         url_pattern = '/' + regex_pattern[1:][:-1]
@@ -458,13 +469,18 @@ do not match the types declared in the implementation of {}.\n""".format(functio
         # We loop through all the API patterns, looking in particular
         # for those using the rest_dispatch decorator; we then parse
         # its mapping of (HTTP_METHOD -> FUNCTION).
-        for p in urlconf.v1_api_and_json_patterns:
+        for p in urlconf.v1_api_and_json_patterns + urlconf.v1_api_mobile_patterns:
             if p.lookup_str != 'zerver.lib.rest.rest_dispatch':
-                continue
+                # Endpoints not using rest_dispatch don't have extra data.
+                methods_endpoints = dict(
+                    GET=p.lookup_str,
+                )
+            else:
+                methods_endpoints = p.default_args
 
             # since the module was already imported and is now residing in
             # memory, we won't actually face any performance penalties here.
-            for method, value in p.default_args.items():
+            for method, value in methods_endpoints.items():
                 if isinstance(value, str):
                     function_name = value
                     tags = set()  # type: Set[str]
@@ -499,7 +515,10 @@ so maybe we shouldn't include it in pending_endpoints.
                     continue
 
                 try:
-                    openapi_parameters = get_openapi_parameters(url_pattern, method)
+                    # Don't include OpenAPI parameters that live in
+                    # the path; these are not extracted by REQ.
+                    openapi_parameters = get_openapi_parameters(url_pattern, method,
+                                                                include_url_parameters=False)
                 except Exception:  # nocoverage
                     raise AssertionError("Could not find OpenAPI docs for %s %s" %
                                          (method, url_pattern))
@@ -695,11 +714,15 @@ class TestCurlExampleGeneration(ZulipTestCase):
         }
     }
 
+    def curl_example(self, endpoint: str, method: str, *args: Any, **kwargs: Any) -> List[str]:
+        return generate_curl_example(endpoint, method,
+                                     "http://localhost:9991/api", *args, **kwargs)
+
     def test_generate_and_render_curl_example(self) -> None:
-        generated_curl_example = generate_curl_example("/get_stream_id", "GET")
+        generated_curl_example = self.curl_example("/get_stream_id", "GET")
         expected_curl_example = [
             "```curl",
-            "curl -X GET -G localhost:9991/api/v1/get_stream_id \\",
+            "curl -sSX GET -G http://localhost:9991/api/v1/get_stream_id \\",
             "    -u BOT_EMAIL_ADDRESS:BOT_API_KEY \\",
             "    -d 'stream=Denmark'",
             "```"
@@ -708,15 +731,15 @@ class TestCurlExampleGeneration(ZulipTestCase):
 
     def test_generate_and_render_curl_example_with_nonexistant_endpoints(self) -> None:
         with self.assertRaises(KeyError):
-            generate_curl_example("/mark_this_stream_as_read", "POST")
+            self.curl_example("/mark_this_stream_as_read", "POST")
         with self.assertRaises(KeyError):
-            generate_curl_example("/mark_stream_as_read", "GET")
+            self.curl_example("/mark_stream_as_read", "GET")
 
     def test_generate_and_render_curl_without_auth(self) -> None:
-        generated_curl_example = generate_curl_example("/dev_fetch_api_key", "POST")
+        generated_curl_example = self.curl_example("/dev_fetch_api_key", "POST")
         expected_curl_example = [
             "```curl",
-            "curl -X POST localhost:9991/api/v1/dev_fetch_api_key \\",
+            "curl -sSX POST http://localhost:9991/api/v1/dev_fetch_api_key \\",
             "    -d 'username=iago@zulip.com'",
             "```"
         ]
@@ -725,10 +748,10 @@ class TestCurlExampleGeneration(ZulipTestCase):
     @patch("zerver.lib.openapi.OpenAPISpec.spec")
     def test_generate_and_render_curl_with_default_examples(self, spec_mock: MagicMock) -> None:
         spec_mock.return_value = self.spec_mock_without_examples
-        generated_curl_example = generate_curl_example("/mark_stream_as_read", "POST")
+        generated_curl_example = self.curl_example("/mark_stream_as_read", "POST")
         expected_curl_example = [
             "```curl",
-            "curl -X POST localhost:9991/api/v1/mark_stream_as_read \\",
+            "curl -sSX POST http://localhost:9991/api/v1/mark_stream_as_read \\",
             "    -d 'stream_id=1' \\",
             "    -d 'bool_param=false'",
             "```"
@@ -739,13 +762,13 @@ class TestCurlExampleGeneration(ZulipTestCase):
     def test_generate_and_render_curl_with_invalid_method(self, spec_mock: MagicMock) -> None:
         spec_mock.return_value = self.spec_mock_with_invalid_method
         with self.assertRaises(ValueError):
-            generate_curl_example("/endpoint", "BREW")  # see: HTCPCP
+            self.curl_example("/endpoint", "BREW")  # see: HTCPCP
 
     def test_generate_and_render_curl_with_array_example(self) -> None:
-        generated_curl_example = generate_curl_example("/messages", "GET")
+        generated_curl_example = self.curl_example("/messages", "GET")
         expected_curl_example = [
             '```curl',
-            'curl -X GET -G localhost:9991/api/v1/messages \\',
+            'curl -sSX GET -G http://localhost:9991/api/v1/messages \\',
             '    -u BOT_EMAIL_ADDRESS:BOT_API_KEY \\',
             "    -d 'anchor=42' \\",
             "    -d 'use_first_unread_anchor=true' \\",
@@ -761,10 +784,10 @@ class TestCurlExampleGeneration(ZulipTestCase):
     @patch("zerver.lib.openapi.OpenAPISpec.spec")
     def test_generate_and_render_curl_with_object(self, spec_mock: MagicMock) -> None:
         spec_mock.return_value = self.spec_mock_using_object
-        generated_curl_example = generate_curl_example("/endpoint", "GET")
+        generated_curl_example = self.curl_example("/endpoint", "GET")
         expected_curl_example = [
             '```curl',
-            'curl -X GET -G localhost:9991/api/v1/endpoint \\',
+            'curl -sSX GET -G http://localhost:9991/api/v1/endpoint \\',
             '    --data-urlencode param1=\'{"key": "value"}\'',
             '```'
         ]
@@ -774,19 +797,20 @@ class TestCurlExampleGeneration(ZulipTestCase):
     def test_generate_and_render_curl_with_object_without_example(self, spec_mock: MagicMock) -> None:
         spec_mock.return_value = self.spec_mock_using_object_without_example
         with self.assertRaises(ValueError):
-            generate_curl_example("/endpoint", "GET")
+            self.curl_example("/endpoint", "GET")
 
     @patch("zerver.lib.openapi.OpenAPISpec.spec")
     def test_generate_and_render_curl_with_array_without_example(self, spec_mock: MagicMock) -> None:
         spec_mock.return_value = self.spec_mock_using_array_without_example
         with self.assertRaises(ValueError):
-            generate_curl_example("/endpoint", "GET")
+            self.curl_example("/endpoint", "GET")
 
     def test_generate_and_render_curl_wrapper(self) -> None:
-        generated_curl_example = render_curl_example("/get_stream_id:GET:email:key:chat.zulip.org/api")
+        generated_curl_example = render_curl_example("/get_stream_id:GET:email:key",
+                                                     api_url="https://zulip.example.com/api")
         expected_curl_example = [
             "```curl",
-            "curl -X GET -G chat.zulip.org/api/v1/get_stream_id \\",
+            "curl -sSX GET -G https://zulip.example.com/api/v1/get_stream_id \\",
             "    -u email:key \\",
             "    -d 'stream=Denmark'",
             "```"
@@ -794,10 +818,11 @@ class TestCurlExampleGeneration(ZulipTestCase):
         self.assertEqual(generated_curl_example, expected_curl_example)
 
     def test_generate_and_render_curl_example_with_excludes(self) -> None:
-        generated_curl_example = generate_curl_example("/messages", "GET", exclude=["client_gravatar", "apply_markdown"])
+        generated_curl_example = self.curl_example("/messages", "GET",
+                                                   exclude=["client_gravatar", "apply_markdown"])
         expected_curl_example = [
             '```curl',
-            'curl -X GET -G localhost:9991/api/v1/messages \\',
+            'curl -sSX GET -G http://localhost:9991/api/v1/messages \\',
             '    -u BOT_EMAIL_ADDRESS:BOT_API_KEY \\',
             "    -d 'anchor=42' \\",
             "    -d 'use_first_unread_anchor=true' \\",

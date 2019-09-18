@@ -14,9 +14,6 @@
     "transifex-client": {
         "issue": "https://github.com/zulip/zulip/issues/8914"
     },
-    "pip-tools": {
-        "issue": "https://github.com/zulip/zulip/issues/10802"
-    },
     "defusedxml": {
         "issue": "https://github.com/zulip/zulip/issues/12191"
     },

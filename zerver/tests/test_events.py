@@ -118,7 +118,7 @@ from zerver.lib.message import (
 )
 from zerver.lib.test_helpers import POSTRequestMock, get_subscription, \
     get_test_image_file, stub_event_queue_user_events, queries_captured, \
-    create_dummy_file
+    create_dummy_file, stdout_suppressed
 from zerver.lib.test_classes import (
     ZulipTestCase,
 )
@@ -615,6 +615,16 @@ class EventsRegisterTest(ZulipTestCase):
 
         for i in range(3):
             content = 'mentioning... @**' + user.full_name + '** hello ' + str(i)
+            self.do_test(
+                lambda: self.send_stream_message(self.example_email('cordelia'),
+                                                 "Verona",
+                                                 content)
+
+            )
+
+    def test_wildcard_mentioned_send_message_events(self) -> None:
+        for i in range(3):
+            content = 'mentioning... @**all** hello ' + str(i)
             self.do_test(
                 lambda: self.send_stream_message(self.example_email('cordelia'),
                                                  "Verona",
@@ -2360,7 +2370,8 @@ class EventsRegisterTest(ZulipTestCase):
         stream = self.make_stream('old_name')
         new_name = u'stream with a brand new name'
         self.subscribe(self.user_profile, stream.name)
-        notification = '<p><span class="user-mention silent" data-user-id="4">King Hamlet</span> renamed stream <strong>old_name</strong> to <strong>stream with a brand new name</strong>.</p>'
+        notification = '<p><span class="user-mention silent" data-user-id="{user_id}">King Hamlet</span> renamed stream <strong>old_name</strong> to <strong>stream with a brand new name</strong>.</p>'
+        notification = notification.format(user_id=self.user_profile.id)
         action = lambda: do_rename_stream(stream, new_name, self.user_profile)
         events = self.do_test(action, num_events=3)
         schema_checker = self.check_events_dict([
@@ -2777,9 +2788,10 @@ class EventsRegisterTest(ZulipTestCase):
 
         with mock.patch('zerver.lib.export.do_export_realm',
                         return_value=create_dummy_file('test-export.tar.gz')):
-            events = self.do_test(
-                lambda: self.client_post('/json/export/realm'),
-                state_change_expected=True, num_events=2)
+            with stdout_suppressed():
+                events = self.do_test(
+                    lambda: self.client_post('/json/export/realm'),
+                    state_change_expected=True, num_events=2)
 
         # The first event is a message from notification-bot.
         error = schema_checker('events[1]', events[1])
@@ -3081,9 +3093,74 @@ class GetUnreadMsgsTest(ZulipTestCase):
         )
         um.flags |= UserMessage.flags.mentioned
         um.save()
-
         result = get_unread_data()
         self.assertEqual(result['mentions'], [stream_message_id])
+
+        um.flags = UserMessage.flags.has_alert_word
+        um.save()
+        result = get_unread_data()
+        # TODO: This should change when we make alert words work better.
+        self.assertEqual(result['mentions'], [])
+
+        um.flags = UserMessage.flags.wildcard_mentioned
+        um.save()
+        result = get_unread_data()
+        self.assertEqual(result['mentions'], [stream_message_id])
+
+        um.flags = 0
+        um.save()
+        result = get_unread_data()
+        self.assertEqual(result['mentions'], [])
+
+        # Test with a muted stream
+        um = UserMessage.objects.get(
+            user_profile_id=user_profile.id,
+            message_id=muted_stream_message_id
+        )
+        um.flags = UserMessage.flags.mentioned
+        um.save()
+        result = get_unread_data()
+        self.assertEqual(result['mentions'], [muted_stream_message_id])
+
+        um.flags = UserMessage.flags.has_alert_word
+        um.save()
+        result = get_unread_data()
+        self.assertEqual(result['mentions'], [])
+
+        um.flags = UserMessage.flags.wildcard_mentioned
+        um.save()
+        result = get_unread_data()
+        self.assertEqual(result['mentions'], [])
+
+        um.flags = 0
+        um.save()
+        result = get_unread_data()
+        self.assertEqual(result['mentions'], [])
+
+        # Test with a muted topic
+        um = UserMessage.objects.get(
+            user_profile_id=user_profile.id,
+            message_id=muted_topic_message_id
+        )
+        um.flags = UserMessage.flags.mentioned
+        um.save()
+        result = get_unread_data()
+        self.assertEqual(result['mentions'], [muted_topic_message_id])
+
+        um.flags = UserMessage.flags.has_alert_word
+        um.save()
+        result = get_unread_data()
+        self.assertEqual(result['mentions'], [])
+
+        um.flags = UserMessage.flags.wildcard_mentioned
+        um.save()
+        result = get_unread_data()
+        self.assertEqual(result['mentions'], [])
+
+        um.flags = 0
+        um.save()
+        result = get_unread_data()
+        self.assertEqual(result['mentions'], [])
 
 class ClientDescriptorsTest(ZulipTestCase):
     def test_get_client_info_for_all_public_streams(self) -> None:
@@ -3278,7 +3355,6 @@ class ClientDescriptorsTest(ZulipTestCase):
                 sender_avatar_source=UserProfile.AVATAR_FROM_GRAVATAR,
                 sender_avatar_version=1,
                 sender_is_mirror_dummy=None,
-                raw_display_recipient=None,
                 recipient_type=None,
                 recipient_type_id=None,
             ),
@@ -3399,6 +3475,7 @@ class FetchQueriesTest(ZulipTestCase):
             realm_bot=1,
             realm_domains=1,
             realm_embedded_bots=0,
+            realm_incoming_webhook_bots=0,
             realm_emoji=1,
             realm_filters=1,
             realm_user=3,

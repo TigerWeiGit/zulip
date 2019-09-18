@@ -17,7 +17,7 @@ from zerver.lib.alert_words import user_alert_words
 from zerver.lib.avatar import avatar_url, get_avatar_field
 from zerver.lib.bot_config import load_bot_config_template
 from zerver.lib.hotspots import get_next_hotspots
-from zerver.lib.integrations import EMBEDDED_BOTS
+from zerver.lib.integrations import EMBEDDED_BOTS, WEBHOOK_INTEGRATIONS
 from zerver.lib.message import (
     aggregate_unread_data,
     apply_unread_message_event,
@@ -31,7 +31,7 @@ from zerver.lib.narrow import check_supported_events_narrow_filter, read_stop_wo
 from zerver.lib.push_notifications import push_notifications_enabled
 from zerver.lib.soft_deactivation import reactivate_user_if_soft_deactivated
 from zerver.lib.realm_icon import realm_icon_url
-from zerver.lib.realm_logo import realm_logo_url
+from zerver.lib.realm_logo import get_realm_logo_url
 from zerver.lib.request import JsonableError
 from zerver.lib.stream_subscription import handle_stream_notifications_compatibility
 from zerver.lib.topic import TOPIC_NAME
@@ -117,9 +117,9 @@ def get_raw_user_data(realm: Realm, client_gravatar: bool) -> Dict[int, Dict[str
     }
 
 def add_realm_logo_fields(state: Dict[str, Any], realm: Realm) -> None:
-    state['realm_logo_url'] = realm_logo_url(realm, night = False)
+    state['realm_logo_url'] = get_realm_logo_url(realm, night = False)
     state['realm_logo_source'] = realm.logo_source
-    state['realm_night_logo_url'] = realm_logo_url(realm, night = True)
+    state['realm_night_logo_url'] = get_realm_logo_url(realm, night = True)
     state['realm_night_logo_source'] = realm.night_logo_source
     state['max_logo_file_size'] = settings.MAX_LOGO_FILE_SIZE
 
@@ -289,6 +289,17 @@ def fetch_initial_state_data(user_profile: UserProfile,
             realm_embedded_bots.append({'name': bot.name,
                                         'config': load_bot_config_template(bot.name)})
         state['realm_embedded_bots'] = realm_embedded_bots
+
+    # This does not have an apply_events counterpart either since
+    # this data is mostly static.
+    if want('realm_incoming_webhook_bots'):
+        realm_incoming_webhook_bots = []
+        for integration in WEBHOOK_INTEGRATIONS:
+            realm_incoming_webhook_bots.append({
+                'name': integration.name,
+                'config': {c[1]: c[2] for c in integration.config_options}
+            })
+        state['realm_incoming_webhook_bots'] = realm_incoming_webhook_bots
 
     if want('recent_private_conversations'):
         # A data structure containing records of this form:

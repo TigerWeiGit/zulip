@@ -69,6 +69,21 @@ lose the setting and need to re-enable it.
   was not displaying that.  Generally, the fix is for users to simply
   mark those messages as read as usual.
 
+- This release has a particularly expensive database migration,
+changing the `UserMessage.id` field from an `int` to a `bigint` to
+support more than 2 billion message deliveries on a Zulip server.  It
+runs in 2 phases: A first migration that doesn't require the server to
+be down (which took about 4 hours to process the 250M rows there
+(`UserMessage.objects.count()`)) and a second migration that does
+require downtime (which took about 60 seconds for chat.zulip.org).  We
+expect that most Zulip servers can happily just use the normal upgrade
+process with at most a few minutes of downtime.  Larger Zulip servers
+may want to first upgrade to [this
+commit](https://github.com/zulip/zulip/commit/b008515d63841e1c0a16ad868d3d67be3bfc20ca)
+using `upgrade-zulip-from-git`, following the instructions to avoid
+downtime, and then upgrade to the new release.
+
+
 **Full feature changelog:**
 - Added 'e' keyboard shortcut for editing currently selected message.
 - Added support for unstarring all starred messages.
@@ -161,6 +176,14 @@ lose the setting and need to re-enable it.
 - Switched our scrollbars to use simplebar, fixing many subtle
   scrollbar-related bugs in the process.
 - Started migrating our frontend codebase to TypeScript.
+
+### 2.0.5 -- 2019-09-11
+
+- CVE-2019-16215: Fix DoS vulnerability in Markdown LINK_RE.
+- CVE-2019-16216: Fix MIME type validation.
+- Fixed email gateway postfix configuration for Ubuntu Bionic.
+- Fixed support for hidden_by_limit messages in Slack import.
+- Fixed confusing output from the `knight` management command.
 
 ### 2.0.4 -- 2019-06-29
 

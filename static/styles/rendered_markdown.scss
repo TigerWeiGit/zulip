@@ -25,7 +25,7 @@
 
     /* Ensure ordered lists are nicely centered in 1-line messages */
     ol {
-        margin: 2px 0 5px 6px;
+        margin: 2px 0 5px 20px;
     }
 
     /* Swap the left and right margins of ordered list for Right-To-Left languages */
@@ -119,11 +119,6 @@
         margin-right: 2px;
         margin-left: 2px;
         white-space: nowrap;
-        background: -moz-linear-gradient(top, hsla(0, 0%, 0%, 0.1) 0%, hsla(0, 0%, 0%, 0.0) 100%);
-        background: -webkit-gradient(linear, left top, left bottom, color-stop(0%, hsla(0, 0%, 0%, 0.1)), color-stop(100%, hsla(0, 0%, 0%, 0.0)));
-        background: -webkit-linear-gradient(top, hsla(0, 0%, 0%, 0.1) 0%, hsla(0, 0%, 0%, 0.0) 100%);
-        background: -o-linear-gradient(top, hsla(0, 0%, 0%, 0.1) 0%, hsla(0, 0%, 0%, 0.0) 100%);
-        background: -ms-linear-gradient(top, hsla(0, 0%, 0%, 0.1) 0%, hsla(0, 0%, 0%, 0.0) 100%);
         background: linear-gradient(to bottom, hsla(0, 0%, 0%, 0.1) 0%, hsla(0, 0%, 0%, 0.0) 100%);
         display: inline-block;
         margin-bottom: 1px;
@@ -154,15 +149,6 @@
     }
 
     /* LaTeX styling */
-    .katex-html {
-        line-height: initial;
-        white-space: initial;
-    }
-
-    .katex-display .katex-html {
-        line-height: 3em;
-    }
-
     .katex-display {
         margin: 0em 0;
     }

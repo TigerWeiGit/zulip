@@ -74,6 +74,7 @@ from zerver.lib.topic import (
     DB_TOPIC_NAME,
 )
 
+from zerver.lib.types import DisplayRecipientT, UserDisplayRecipient
 from zerver.lib.soft_deactivation import (
     add_missing_messages,
     do_soft_activate_users,
@@ -86,7 +87,9 @@ from zerver.models import (
     Message, Realm, Recipient, Stream, UserMessage, UserProfile, Attachment,
     RealmAuditLog, RealmDomain, get_realm, UserPresence, Subscription,
     get_stream, get_stream_recipient, get_system_bot, get_user, Reaction,
-    flush_per_request_caches, ScheduledMessage, get_huddle_recipient
+    flush_per_request_caches, ScheduledMessage, get_huddle_recipient,
+    bulk_get_huddle_user_ids, get_huddle_user_ids,
+    get_personal_recipient, get_display_recipient
 )
 
 
@@ -104,7 +107,7 @@ import datetime
 import mock
 import time
 import ujson
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 from collections import namedtuple
 
@@ -3685,6 +3688,14 @@ class CheckMessageTest(ZulipTestCase):
         self.assertEqual(test_bot.last_reminder, None)
 
 class DeleteMessageTest(ZulipTestCase):
+    def test_delete_message_invalid_request_format(self) -> None:
+        self.login("iago@zulip.com")
+        msg_id = self.send_stream_message("hamlet@zulip.com", "Scotland")
+        result = self.client_delete('/json/messages/{msg_id}'.format(msg_id=msg_id + 1),
+                                    {'message_id': msg_id})
+        self.assert_json_error(result, "Invalid message(s)")
+        result = self.client_delete('/json/messages/{msg_id}'.format(msg_id=msg_id))
+        self.assert_json_success(result)
 
     def test_delete_message_by_user(self) -> None:
         def set_message_deleting_params(allow_message_deleting: bool,
@@ -4177,7 +4188,6 @@ class MessageHydrationTest(ZulipTestCase):
         stream_id = get_stream('Verona', realm).id
 
         obj = dict(
-            raw_display_recipient='Verona',
             recipient_type=Recipient.STREAM,
             recipient_type_id=stream_id,
             sender_is_mirror_dummy=False,
@@ -4187,21 +4197,24 @@ class MessageHydrationTest(ZulipTestCase):
             sender_id=cordelia.id,
         )
 
-        MessageDict.hydrate_recipient_info(obj)
+        MessageDict.hydrate_recipient_info(obj, 'Verona')
 
         self.assertEqual(obj['display_recipient'], 'Verona')
         self.assertEqual(obj['type'], 'stream')
 
     def test_hydrate_pm_recipient_info(self) -> None:
         cordelia = self.example_user('cordelia')
+        display_recipient = [
+            dict(
+                email='aaron@example.com',
+                full_name='Aaron Smith',
+                short_name='Aaron',
+                id=999,
+                is_mirror_dummy=False
+            ),
+        ]   # type: List[UserDisplayRecipient]
 
         obj = dict(
-            raw_display_recipient=[
-                dict(
-                    email='aaron@example.com',
-                    full_name='Aaron Smith',
-                ),
-            ],
             recipient_type=Recipient.PERSONAL,
             recipient_type_id=None,
             sender_is_mirror_dummy=False,
@@ -4211,7 +4224,7 @@ class MessageHydrationTest(ZulipTestCase):
             sender_id=cordelia.id,
         )
 
-        MessageDict.hydrate_recipient_info(obj)
+        MessageDict.hydrate_recipient_info(obj, display_recipient)
 
         self.assertEqual(
             obj['display_recipient'],
@@ -4219,6 +4232,9 @@ class MessageHydrationTest(ZulipTestCase):
                 dict(
                     email='aaron@example.com',
                     full_name='Aaron Smith',
+                    short_name='Aaron',
+                    id=999,
+                    is_mirror_dummy=False
                 ),
                 dict(
                     email=cordelia.email,
@@ -4272,6 +4288,158 @@ class MessageHydrationTest(ZulipTestCase):
 
         self.assertIn('class="user-mention"', new_message['content'])
         self.assertEqual(new_message['flags'], ['mentioned'])
+
+    def test_display_recipient_up_to_date(self) -> None:
+        """
+        This is a test for a bug where due to caching of message_dicts,
+        after updating a user's information, fetching those cached messages
+        via messages_for_ids would return message_dicts with display_recipient
+        still having the old information. The returned message_dicts should have
+        up-to-date display_recipients and we check for that here.
+        """
+
+        hamlet = self.example_user('hamlet')
+        cordelia = self.example_user('cordelia')
+        message_id = self.send_personal_message(hamlet.email, cordelia.email, 'test')
+
+        cordelia_recipient = get_personal_recipient(cordelia.id)
+        # Cause the display_recipient to get cached:
+        get_display_recipient(cordelia_recipient)
+
+        # Change cordelia's email:
+        cordelia_new_email = 'new-cordelia@zulip.com'
+        cordelia.email = cordelia_new_email
+        cordelia.save()
+
+        # Local display_recipient cache needs to be flushed.
+        # flush_per_request_caches() is called after every request,
+        # so it makes sense to run it here.
+        flush_per_request_caches()
+
+        messages = messages_for_ids(
+            message_ids=[message_id],
+            user_message_flags={message_id: ['read']},
+            search_fields={},
+            apply_markdown=True,
+            client_gravatar=True,
+            allow_edit_history=False,
+        )
+        message = messages[0]
+
+        # Find which display_recipient in the list is cordelia:
+        for display_recipient in message['display_recipient']:
+            if display_recipient['short_name'] == 'cordelia':
+                cordelia_display_recipient = display_recipient
+
+        # Make sure the email is up-to-date.
+        self.assertEqual(cordelia_display_recipient['email'], cordelia_new_email)
+
+class TestMessageForIdsDisplayRecipientFetching(ZulipTestCase):
+    def _verify_display_recipient(self, display_recipient: DisplayRecipientT,
+                                  expected_recipient_objects: Union[Stream, List[UserProfile]]) -> None:
+        if isinstance(expected_recipient_objects, Stream):
+            self.assertEqual(display_recipient, expected_recipient_objects.name)
+
+        else:
+            for user_profile in expected_recipient_objects:
+                recipient_dict = {'email': user_profile.email,
+                                  'full_name': user_profile.full_name,
+                                  'short_name': user_profile.short_name,
+                                  'id': user_profile.id,
+                                  'is_mirror_dummy': user_profile.is_mirror_dummy}  # type: UserDisplayRecipient
+                self.assertTrue(recipient_dict in display_recipient)
+
+    def test_display_recipient_personal(self) -> None:
+        hamlet = self.example_user('hamlet')
+        cordelia = self.example_user('cordelia')
+        othello = self.example_user('othello')
+        message_ids = [
+            self.send_personal_message(hamlet.email, cordelia.email, 'test'),
+            self.send_personal_message(cordelia.email, othello.email, 'test')
+        ]
+
+        messages = messages_for_ids(
+            message_ids=message_ids,
+            user_message_flags={message_id: ['read'] for message_id in message_ids},
+            search_fields={},
+            apply_markdown=True,
+            client_gravatar=True,
+            allow_edit_history=False,
+        )
+
+        self._verify_display_recipient(messages[0]['display_recipient'], [hamlet, cordelia])
+        self._verify_display_recipient(messages[1]['display_recipient'], [cordelia, othello])
+
+    def test_display_recipient_stream(self) -> None:
+        cordelia = self.example_user('cordelia')
+        message_ids = [
+            self.send_stream_message(cordelia.email, "Verona", content='test'),
+            self.send_stream_message(cordelia.email, "Denmark", content='test')
+        ]
+
+        messages = messages_for_ids(
+            message_ids=message_ids,
+            user_message_flags={message_id: ['read'] for message_id in message_ids},
+            search_fields={},
+            apply_markdown=True,
+            client_gravatar=True,
+            allow_edit_history=False,
+        )
+
+        self._verify_display_recipient(messages[0]['display_recipient'], get_stream("Verona", cordelia.realm))
+        self._verify_display_recipient(messages[1]['display_recipient'], get_stream("Denmark", cordelia.realm))
+
+    def test_display_recipient_huddle(self) -> None:
+        hamlet = self.example_user('hamlet')
+        cordelia = self.example_user('cordelia')
+        othello = self.example_user('othello')
+        iago = self.example_user('iago')
+        message_ids = [
+            self.send_huddle_message(hamlet.email, [cordelia.email, othello.email], 'test'),
+            self.send_huddle_message(cordelia.email, [hamlet.email, othello.email, iago.email], 'test')
+        ]
+
+        messages = messages_for_ids(
+            message_ids=message_ids,
+            user_message_flags={message_id: ['read'] for message_id in message_ids},
+            search_fields={},
+            apply_markdown=True,
+            client_gravatar=True,
+            allow_edit_history=False,
+        )
+
+        self._verify_display_recipient(messages[0]['display_recipient'], [hamlet, cordelia, othello])
+        self._verify_display_recipient(messages[1]['display_recipient'], [hamlet, cordelia, othello, iago])
+
+    def test_display_recipient_various_types(self) -> None:
+        hamlet = self.example_user('hamlet')
+        cordelia = self.example_user('cordelia')
+        othello = self.example_user('othello')
+        iago = self.example_user('iago')
+        message_ids = [
+            self.send_huddle_message(hamlet.email, [cordelia.email, othello.email], 'test'),
+            self.send_stream_message(cordelia.email, "Verona", content='test'),
+            self.send_personal_message(hamlet.email, cordelia.email, 'test'),
+            self.send_stream_message(cordelia.email, "Denmark", content='test'),
+            self.send_huddle_message(cordelia.email, [hamlet.email, othello.email, iago.email], 'test'),
+            self.send_personal_message(cordelia.email, othello.email, 'test')
+        ]
+
+        messages = messages_for_ids(
+            message_ids=message_ids,
+            user_message_flags={message_id: ['read'] for message_id in message_ids},
+            search_fields={},
+            apply_markdown=True,
+            client_gravatar=True,
+            allow_edit_history=False,
+        )
+
+        self._verify_display_recipient(messages[0]['display_recipient'], [hamlet, cordelia, othello])
+        self._verify_display_recipient(messages[1]['display_recipient'], get_stream("Verona", hamlet.realm))
+        self._verify_display_recipient(messages[2]['display_recipient'], [hamlet, cordelia])
+        self._verify_display_recipient(messages[3]['display_recipient'], get_stream("Denmark", hamlet.realm))
+        self._verify_display_recipient(messages[4]['display_recipient'], [hamlet, cordelia, othello, iago])
+        self._verify_display_recipient(messages[5]['display_recipient'], [cordelia, othello])
 
 class MessageVisibilityTest(ZulipTestCase):
     def test_update_first_visible_message_id(self) -> None:
@@ -4330,3 +4498,27 @@ class MessageVisibilityTest(ZulipTestCase):
         with mock.patch("zerver.lib.message.update_first_visible_message_id") as m:
             maybe_update_first_visible_message_id(realm, lookback_hours)
         m.assert_called_once_with(realm)
+
+class TestBulkGetHuddleUserIds(ZulipTestCase):
+    def test_bulk_get_huddle_user_ids(self) -> None:
+        hamlet = self.example_user('hamlet')
+        cordelia = self.example_user('cordelia')
+        othello = self.example_user('othello')
+        iago = self.example_user('iago')
+        message_ids = [
+            self.send_huddle_message(hamlet.email, [cordelia.email, othello.email], 'test'),
+            self.send_huddle_message(cordelia.email, [hamlet.email, othello.email, iago.email], 'test')
+        ]
+
+        messages = Message.objects.filter(id__in=message_ids).order_by("id")
+        first_huddle_recipient = messages[0].recipient
+        first_huddle_user_ids = list(get_huddle_user_ids(first_huddle_recipient))
+        second_huddle_recipient = messages[1].recipient
+        second_huddle_user_ids = list(get_huddle_user_ids(second_huddle_recipient))
+
+        huddle_user_ids = bulk_get_huddle_user_ids([first_huddle_recipient, second_huddle_recipient])
+        self.assertEqual(huddle_user_ids[first_huddle_recipient.id], first_huddle_user_ids)
+        self.assertEqual(huddle_user_ids[second_huddle_recipient.id], second_huddle_user_ids)
+
+    def test_bulk_get_huddle_user_ids_empty_list(self) -> None:
+        self.assertEqual(bulk_get_huddle_user_ids([]), {})

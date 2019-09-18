@@ -17,12 +17,13 @@ import logging
 import magic
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from django_auth_ldap.backend import LDAPBackend, _LDAPUser
+from django_auth_ldap.backend import LDAPBackend, _LDAPUser, ldap_error
 from django.contrib.auth import get_backends
 from django.contrib.auth.backends import RemoteUserBackend
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
+from django.dispatch import receiver, Signal
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.urls import reverse
@@ -425,20 +426,23 @@ class ZulipLDAPAuthBackendBase(ZulipAuthMixin, LDAPBackend):
            In authentication contexts, this is overriden in ZulipLDAPAuthBackend.
         """
         (user, built) = super().get_or_build_user(username, ldap_user)
-        self.sync_avatar_from_ldap(user, ldap_user)
-        self.sync_full_name_from_ldap(user, ldap_user)
-        self.sync_custom_profile_fields_from_ldap(user, ldap_user)
         if 'userAccountControl' in settings.AUTH_LDAP_USER_ATTR_MAP:
             user_disabled_in_ldap = self.is_account_control_disabled_user(ldap_user)
-            if user_disabled_in_ldap and user.is_active:
-                logging.info("Deactivating user %s because they are disabled in LDAP." %
-                             (user.email,))
-                do_deactivate_user(user)
+            if user_disabled_in_ldap:
+                if user.is_active:
+                    logging.info("Deactivating user %s because they are disabled in LDAP." %
+                                 (user.email,))
+                    do_deactivate_user(user)
+                # Do an early return to avoid trying to sync additional data.
                 return (user, built)
-            if not user_disabled_in_ldap and not user.is_active:
+            elif not user.is_active:
                 logging.info("Reactivating user %s because they are not disabled in LDAP." %
                              (user.email,))
                 do_reactivate_user(user)
+
+        self.sync_avatar_from_ldap(user, ldap_user)
+        self.sync_full_name_from_ldap(user, ldap_user)
+        self.sync_custom_profile_fields_from_ldap(user, ldap_user)
         return (user, built)
 
 class ZulipLDAPAuthBackend(ZulipLDAPAuthBackendBase):
@@ -566,14 +570,38 @@ class ZulipLDAPUserPopulator(ZulipLDAPAuthBackendBase):
                      return_data: Optional[Dict[str, Any]]=None) -> Optional[UserProfile]:
         return None
 
-def sync_user_from_ldap(user_profile: UserProfile) -> bool:
+class PopulateUserLDAPError(ZulipLDAPException):
+    pass
+
+@receiver(ldap_error, sender=ZulipLDAPUserPopulator)
+def catch_ldap_error(signal: Signal, **kwargs: Any) -> None:
+    """
+    Inside django_auth_ldap populate_user(), if LDAPError is raised,
+    e.g. due to invalid connection credentials, the function catches it
+    and emits a signal (ldap_error) to communicate this error to others.
+    We normally don't use signals, but here there's no choice, so in this function
+    we essentially convert the signal to a normal exception that will properly
+    propagate out of django_auth_ldap internals.
+    """
+    if kwargs['context'] == 'populate_user':
+        # The exception message can contain the password (if it was invalid),
+        # so it seems better not to log that, and only use the original exception's name here.
+        raise PopulateUserLDAPError(kwargs['exception'].__class__.__name__)
+
+def sync_user_from_ldap(user_profile: UserProfile, logger: logging.Logger) -> bool:
     backend = ZulipLDAPUserPopulator()
     updated_user = backend.populate_user(backend.django_to_ldap_username(user_profile.email))
-    if not updated_user:
-        if settings.LDAP_DEACTIVATE_NON_MATCHING_USERS:
-            do_deactivate_user(user_profile)
-        return False
-    return True
+    if updated_user:
+        logger.info("Updated %s." % (user_profile.email,))
+        return True
+
+    if settings.LDAP_DEACTIVATE_NON_MATCHING_USERS:
+        do_deactivate_user(user_profile)
+        logger.info("Deactivated non-matching user: %s" % (user_profile.email,))
+        return True
+    elif user_profile.is_active:
+        logger.warning("Did not find %s in LDAP." % (user_profile.email,))
+    return False
 
 # Quick tool to test whether you're correctly authenticating to LDAP
 def query_ldap(email: str) -> List[str]:

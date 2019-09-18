@@ -55,7 +55,8 @@ from zproject.backends import ZulipDummyBackend, EmailAuthBackend, \
     dev_auth_enabled, password_auth_enabled, github_auth_enabled, google_auth_enabled, \
     require_email_format_usernames, AUTH_BACKEND_NAME_MAP, \
     ZulipLDAPConfigurationError, ZulipLDAPExceptionOutsideDomain, \
-    ZulipLDAPException, query_ldap, sync_user_from_ldap, SocialAuthMixin
+    ZulipLDAPException, query_ldap, sync_user_from_ldap, SocialAuthMixin, \
+    PopulateUserLDAPError
 
 from zerver.views.auth import (maybe_send_to_registration,
                                _subdomain_token_salt)
@@ -498,8 +499,12 @@ class SocialAuthBase(ZulipTestCase):
                          next: str='',
                          multiuse_object_key: str='',
                          expect_choose_email_screen: bool=False,
+                         alternative_start_url: Optional[str]=None,
                          **extra_data: Any) -> HttpResponse:
         url = self.LOGIN_URL
+        if alternative_start_url is not None:
+            url = alternative_start_url
+
         params = {}
         headers = {}
         if subdomain is not None:
@@ -1177,6 +1182,42 @@ class GoogleAuthBackendTest(SocialAuthBase):
             self.assertEqual(result.url, "/login/")
             mock_warning.assert_called_once_with("Social auth (Google) failed "
                                                  "because user has no verified emails")
+
+    def test_social_auth_mobile_success_legacy_url(self) -> None:
+        mobile_flow_otp = '1234abcd' * 8
+        account_data_dict = self.get_account_data_dict(email=self.email, name='Full Name')
+        self.assertEqual(len(mail.outbox), 0)
+        self.user_profile.date_joined = timezone_now() - datetime.timedelta(seconds=JUST_CREATED_THRESHOLD + 1)
+        self.user_profile.save()
+
+        with self.settings(SEND_LOGIN_EMAILS=True):
+            # Verify that the right thing happens with an invalid-format OTP
+            result = self.social_auth_test(account_data_dict, subdomain='zulip',
+                                           alternative_start_url="/accounts/login/google/",
+                                           mobile_flow_otp="1234")
+            self.assert_json_error(result, "Invalid OTP")
+            result = self.social_auth_test(account_data_dict, subdomain='zulip',
+                                           alternative_start_url="/accounts/login/google/",
+                                           mobile_flow_otp="invalido" * 8)
+            self.assert_json_error(result, "Invalid OTP")
+
+            # Now do it correctly
+            result = self.social_auth_test(account_data_dict, subdomain='zulip',
+                                           expect_choose_email_screen=True,
+                                           alternative_start_url="/accounts/login/google/",
+                                           mobile_flow_otp=mobile_flow_otp)
+        self.assertEqual(result.status_code, 302)
+        redirect_url = result['Location']
+        parsed_url = urllib.parse.urlparse(redirect_url)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+        self.assertEqual(parsed_url.scheme, 'zulip')
+        self.assertEqual(query_params["realm"], ['http://zulip.testserver'])
+        self.assertEqual(query_params["email"], [self.example_email("hamlet")])
+        encrypted_api_key = query_params["otp_encrypted_api_key"][0]
+        hamlet_api_keys = get_all_api_keys(self.example_user('hamlet'))
+        self.assertIn(otp_decrypt_api_key(encrypted_api_key, mobile_flow_otp), hamlet_api_keys)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('Zulip on Android', mail.outbox[0].body)
 
     def test_google_auth_enabled(self) -> None:
         with self.settings(AUTHENTICATION_BACKENDS=('zproject.backends.GoogleAuthBackend',)):
@@ -2558,8 +2599,24 @@ class TestZulipLDAPUserPopulator(ZulipLDAPTestCase):
                 LDAP_APPEND_DOMAIN='zulip.com',
                 AUTH_LDAP_BIND_PASSWORD='',
                 AUTH_LDAP_USER_DN_TEMPLATE='uid=%(user)s,ou=users,dc=zulip,dc=com'):
-            result = sync_user_from_ldap(user_profile)
+            result = sync_user_from_ldap(user_profile, mock.Mock())
             self.assertTrue(result)
+
+    @mock.patch("zproject.backends.do_deactivate_user")
+    def test_ldap_auth_error_doesnt_deactivate_user(self, mock_deactivate: mock.MagicMock) -> None:
+        """
+        This is a test for a bug where failure to connect to LDAP in sync_user_from_ldap
+        (e.g. due to invalid credentials) would cause the user to be deactivated if
+        LDAP_DEACTIVATE_NON_MATCHING_USERS was True.
+        Details: https://github.com/zulip/zulip/issues/13130
+        """
+        with self.settings(
+                LDAP_DEACTIVATE_NON_MATCHING_USERS=True,
+                LDAP_APPEND_DOMAIN='zulip.com',
+                AUTH_LDAP_BIND_PASSWORD='wrongpass'):
+            with self.assertRaises(PopulateUserLDAPError):
+                sync_user_from_ldap(self.example_user('hamlet'), mock.Mock())
+            mock_deactivate.assert_not_called()
 
     def test_update_full_name(self) -> None:
         self.mock_ldap.directory = {
@@ -2621,6 +2678,20 @@ class TestZulipLDAPUserPopulator(ZulipLDAPTestCase):
         hamlet = self.example_user('hamlet')
         self.assertFalse(hamlet.is_active)
 
+    @mock.patch("zproject.backends.ZulipLDAPAuthBackendBase.sync_full_name_from_ldap")
+    def test_dont_sync_disabled_ldap_user(self, fake_sync: mock.MagicMock) -> None:
+        self.mock_ldap.directory = {
+            'uid=hamlet,ou=users,dc=zulip,dc=com': {
+                'cn': ['King Hamlet', ],
+                'userAccountControl': ['2', ],
+            }
+        }
+
+        with self.settings(AUTH_LDAP_USER_ATTR_MAP={'full_name': 'cn',
+                                                    'userAccountControl': 'userAccountControl'}):
+            self.perform_ldap_sync(self.example_user('hamlet'))
+            fake_sync.assert_not_called()
+
     def test_reactivate_user(self) -> None:
         self.mock_ldap.directory = {
             'uid=hamlet,ou=users,dc=zulip,dc=com': {
@@ -2635,6 +2706,24 @@ class TestZulipLDAPUserPopulator(ZulipLDAPTestCase):
             self.perform_ldap_sync(self.example_user('hamlet'))
         hamlet = self.example_user('hamlet')
         self.assertTrue(hamlet.is_active)
+
+    def test_user_not_found_in_ldap(self) -> None:
+        with self.settings(
+                LDAP_DEACTIVATE_NON_MATCHING_USERS=False,
+                LDAP_APPEND_DOMAIN='zulip.com',
+                AUTH_LDAP_BIND_PASSWORD='',
+                AUTH_LDAP_USER_DN_TEMPLATE='uid=%(user)s,ou=users,dc=zulip,dc=com'):
+            hamlet = self.example_user("hamlet")
+            mock_logger = mock.MagicMock()
+            result = sync_user_from_ldap(hamlet, mock_logger)
+            mock_logger.warning.assert_called_once_with("Did not find %s in LDAP." % (hamlet.email,))
+            self.assertFalse(result)
+
+            do_deactivate_user(hamlet)
+            mock_logger = mock.MagicMock()
+            result = sync_user_from_ldap(hamlet, mock_logger)
+            self.assertEqual(mock_logger.method_calls, [])  # In this case the logger shouldn't be used.
+            self.assertFalse(result)
 
     def test_update_user_avatar(self) -> None:
         self.mock_ldap.directory = {
@@ -2725,9 +2814,9 @@ class TestZulipLDAPUserPopulator(ZulipLDAPTestCase):
                            AUTH_LDAP_BIND_PASSWORD='',
                            AUTH_LDAP_USER_DN_TEMPLATE='uid=%(user)s,ou=users,dc=zulip,dc=com',
                            LDAP_DEACTIVATE_NON_MATCHING_USERS=True):
-            result = sync_user_from_ldap(self.example_user('hamlet'))
+            result = sync_user_from_ldap(self.example_user('hamlet'), mock.Mock())
 
-            self.assertFalse(result)
+            self.assertTrue(result)
             hamlet = self.example_user('hamlet')
             self.assertFalse(hamlet.is_active)
 

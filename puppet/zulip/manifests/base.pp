@@ -4,9 +4,10 @@ class zulip::base {
     'debian': {
       $release_name = $::operatingsystemrelease ? {
         # Debian releases
-        /^7.[0-9]*/ => 'wheezy',
-        /^8.[0-9]*/ => 'jessie',
-        /^9.[0-9]*/ => 'stretch',
+        /^7\.[0-9]*$/  => 'wheezy',
+        /^8\.[0-9]*$/  => 'jessie',
+        /^9\.[0-9]*$/  => 'stretch',
+        /^10\.[0-9]*$/ => 'buster',
         # Ubuntu releases
         '12.04' => 'precise',
         '14.04' => 'trusty',
@@ -58,6 +59,7 @@ class zulip::base {
     'wheezy'  => '9.1',
     'jessie'  => '9.4',
     'stretch' => '9.6',
+    'buster'  => '11',
     'precise' => '9.1',
     'trusty'  => '9.3',
     'vivid'   => '9.4',

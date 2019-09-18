@@ -19,9 +19,10 @@ from zerver.models import UserProfile, Recipient, Realm, \
     get_user, get_realm, get_stream, get_stream_recipient, \
     get_source_profile, get_system_bot, \
     ScheduledEmail, check_valid_user_ids, \
-    get_user_by_id_in_realm_including_cross_realm, CustomProfileField
+    get_user_by_id_in_realm_including_cross_realm, CustomProfileField, \
+    InvalidFakeEmailDomain, get_fake_email_domain
 
-from zerver.lib.avatar import avatar_url
+from zerver.lib.avatar import avatar_url, get_gravatar_url
 from zerver.lib.exceptions import JsonableError
 from zerver.lib.send_email import send_future_email, clear_scheduled_emails, \
     deliver_email
@@ -42,6 +43,7 @@ from zerver.lib.users import user_ids_to_users, access_user_by_id, \
     get_accounts_for_email
 
 from django.conf import settings
+from django.test import override_settings
 
 import datetime
 import mock
@@ -192,7 +194,7 @@ class PermissionTest(ZulipTestCase):
         members = result.json()['members']
         hamlet = find_dict(members, 'user_id', user.id)
         self.assertEqual(hamlet['email'], "user%s@zulip.testserver" % (user.id,))
-        self.assertEqual(hamlet['avatar_url'], "https://secure.gravatar.com/avatar/5106fb7f928d89e2f2ddb3c4c42d6949?d=identicon&version=1")
+        self.assertEqual(hamlet['avatar_url'], get_gravatar_url(hamlet['email'], 1))
         self.assertNotIn('delivery_email', hamlet)
 
         # Also verify the /events code path.  This is a bit hacky, but
@@ -217,7 +219,7 @@ class PermissionTest(ZulipTestCase):
         members = result.json()['members']
         hamlet = find_dict(members, 'user_id', user.id)
         self.assertEqual(hamlet['email'], "user%s@zulip.testserver" % (user.id,))
-        self.assertEqual(hamlet['avatar_url'], "https://secure.gravatar.com/avatar/5106fb7f928d89e2f2ddb3c4c42d6949?d=identicon&version=1")
+        self.assertEqual(hamlet['avatar_url'], get_gravatar_url(hamlet['email'], 1))
         self.assertEqual(hamlet['delivery_email'], self.example_email("hamlet"))
 
     def test_user_cannot_promote_to_admin(self) -> None:
@@ -1272,3 +1274,14 @@ class GetProfileTest(ZulipTestCase):
                     user['avatar_url'],
                     avatar_url(user_profile),
                 )
+
+class FakeEmailDomainTest(ZulipTestCase):
+    @override_settings(FAKE_EMAIL_DOMAIN="invaliddomain")
+    def test_invalid_fake_email_domain(self) -> None:
+        with self.assertRaises(InvalidFakeEmailDomain):
+            get_fake_email_domain()
+
+    @override_settings(FAKE_EMAIL_DOMAIN="127.0.0.1")
+    def test_invalid_fake_email_domain_ip(self) -> None:
+        with self.assertRaises(InvalidFakeEmailDomain):
+            get_fake_email_domain()

@@ -1,7 +1,6 @@
 from typing import Union, Optional, Dict, Any, List
 
 import ujson
-
 from django.http import HttpRequest, HttpResponse
 
 from django.utils.translation import ugettext as _
@@ -36,7 +35,8 @@ from zerver.lib.utils import generate_api_key, generate_random_token
 from zerver.models import UserProfile, Stream, Message, email_allowed_for_realm, \
     get_user_by_delivery_email, Service, get_user_including_cross_realm, \
     DomainNotAllowedForRealmError, DisposableEmailError, get_user_profile_by_id_in_realm, \
-    EmailContainsPlusError, get_user_by_id_in_realm_including_cross_realm, Realm
+    EmailContainsPlusError, get_user_by_id_in_realm_including_cross_realm, Realm, \
+    InvalidFakeEmailDomain
 
 def deactivate_user_backend(request: HttpRequest, user_profile: UserProfile,
                             user_id: int) -> HttpResponse:
@@ -273,10 +273,15 @@ def add_bot_backend(
         default_all_public_streams: Optional[bool]=REQ(validator=check_bool, default=None)
 ) -> HttpResponse:
     short_name = check_short_name(short_name_raw)
-    service_name = service_name or short_name
+    if bot_type != UserProfile.INCOMING_WEBHOOK_BOT:
+        service_name = service_name or short_name
     short_name += "-bot"
     full_name = check_full_name(full_name_raw)
-    email = '%s@%s' % (short_name, user_profile.realm.get_bot_domain())
+    try:
+        email = '%s@%s' % (short_name, user_profile.realm.get_bot_domain())
+    except InvalidFakeEmailDomain:
+        return json_error(_("Can't create bots until FAKE_EMAIL_DOMAIN is correctly configured.\n"
+                            "Please contact your server administrator."))
     form = CreateUserForm({'full_name': full_name, 'email': email})
 
     if bot_type == UserProfile.EMBEDDED_BOT:
@@ -320,8 +325,8 @@ def add_bot_backend(
         (default_events_register_stream, ignored_rec, ignored_sub) = access_stream_by_name(
             user_profile, default_events_register_stream_name)
 
-    if bot_type == UserProfile.EMBEDDED_BOT:
-        check_valid_bot_config(service_name, config_data)
+    if bot_type in (UserProfile.INCOMING_WEBHOOK_BOT, UserProfile.EMBEDDED_BOT) and service_name:
+        check_valid_bot_config(bot_type, service_name, config_data)
 
     bot_profile = do_create_user(email=email, password='',
                                  realm=user_profile.realm, full_name=full_name,
@@ -337,13 +342,17 @@ def add_bot_backend(
         upload_avatar_image(user_file, user_profile, bot_profile)
 
     if bot_type in (UserProfile.OUTGOING_WEBHOOK_BOT, UserProfile.EMBEDDED_BOT):
+        assert(isinstance(service_name, str))
         add_service(name=service_name,
                     user_profile=bot_profile,
                     base_url=payload_url,
                     interface=interface_type,
                     token=generate_api_key())
 
-    if bot_type == UserProfile.EMBEDDED_BOT:
+    if bot_type == UserProfile.INCOMING_WEBHOOK_BOT and service_name:
+        set_bot_config(bot_profile, "integration_id", service_name)
+
+    if bot_type in (UserProfile.INCOMING_WEBHOOK_BOT, UserProfile.EMBEDDED_BOT):
         for key, value in config_data.items():
             set_bot_config(bot_profile, key, value)
 
@@ -528,5 +537,10 @@ def team_view(request: HttpRequest) -> HttpResponse:
     return render(
         request,
         'zerver/team.html',
-        context=data,
+        context={
+            'page_params': {
+                'contrib': data['contrib'],
+            },
+            'date': data['date'],
+        },
     )

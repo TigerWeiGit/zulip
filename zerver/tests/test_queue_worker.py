@@ -2,6 +2,7 @@ import os
 import time
 import ujson
 import smtplib
+import re
 
 from django.conf import settings
 from django.test import override_settings
@@ -25,6 +26,8 @@ from zerver.worker.queue_processors import (
     MissedMessageWorker,
     SlowQueryWorker,
 )
+
+from zerver.middleware import write_log_line
 
 Event = Dict[str, Any]
 
@@ -70,15 +73,6 @@ class WorkerTest(ZulipTestCase):
     def test_slow_queries_worker(self) -> None:
         error_bot = get_system_bot(settings.ERROR_BOT)
         fake_client = self.FakeClient()
-        # TODO: Rewrite this set part of the test by just mocking
-        # `is_slow_query` to generate the events.
-        events = [
-            {'query': 'test query (data)'},
-            {'query': 'second test query (data)'},
-        ]
-        for event in events:
-            fake_client.queue.append(('slow_queries', event))
-
         worker = SlowQueryWorker()
 
         time_mock = patch(
@@ -94,6 +88,11 @@ class WorkerTest(ZulipTestCase):
             with simulated_queue_client(lambda: fake_client):
                 try:
                     worker.setup()
+                    # `write_log_line` is where we publish slow queries to the queue.
+                    with patch('zerver.middleware.is_slow_query', return_value=True):
+                        write_log_line(log_data=dict(test='data'), email='test@zulip.com',
+                                       remote_ip='127.0.0.1', client_name='website', path='/test/',
+                                       method='GET')
                     worker.start()
                 except AbortLoop:
                     pass
@@ -107,7 +106,10 @@ class WorkerTest(ZulipTestCase):
         self.assertEqual(args[2], "stream")
         self.assertEqual(args[3], "errors")
         self.assertEqual(args[4], "testserver: slow queries")
-        self.assertEqual(args[5], "    test query (data)\n    second test query (data)\n")
+        # Testing for specific query times can lead to test discrepancies.
+        logging_info = re.sub(r'\(db: [0-9]+ms/13q\)', '', args[5])
+        self.assertEqual(logging_info, '    127.0.0.1       GET     200 -1000ms '
+                                       ' /test/ (test@zulip.com via website) (test@zulip.com)\n')
 
     def test_missed_message_worker(self) -> None:
         cordelia = self.example_user('cordelia')

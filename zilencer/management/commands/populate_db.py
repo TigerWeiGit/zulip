@@ -15,7 +15,7 @@ from django.utils.timezone import timedelta as timezone_timedelta
 
 from zerver.lib.actions import STREAM_ASSIGNMENT_COLORS, check_add_realm_emoji, \
     do_change_is_admin, do_send_messages, do_update_user_custom_profile_data, \
-    try_add_realm_custom_profile_field
+    try_add_realm_custom_profile_field, try_add_realm_default_custom_profile_field
 from zerver.lib.bulk_create import bulk_create_streams, bulk_create_users
 from zerver.lib.cache import cache_set
 from zerver.lib.generate_test_data import create_test_data
@@ -180,7 +180,7 @@ class Command(BaseCommand):
             # Create our three default realms
             # Could in theory be done via zerver.lib.actions.do_create_realm, but
             # welcome-bot (needed for do_create_realm) hasn't been created yet
-            internal_realm = Realm.objects.create(string_id=settings.SYSTEM_BOT_REALM)
+            create_internal_realm()
             zulip_realm = Realm.objects.create(
                 string_id="zulip", name="Zulip Dev", emails_restricted_to_domains=True,
                 description="The Zulip development environment default organization."
@@ -224,11 +224,6 @@ class Command(BaseCommand):
 
             # These bots are directly referenced from code and thus
             # are needed for the test suite.
-            internal_realm_bots = [(bot['name'], bot['email_template'] % (settings.INTERNAL_BOT_DOMAIN,))
-                                   for bot in settings.INTERNAL_BOTS]
-            internal_realm_bots += [
-                ("Zulip Feedback Bot", "feedback@zulip.com"),
-            ]
             zulip_realm_bots = [
                 ("Zulip Error Bot", "error-bot@zulip.com"),
                 ("Zulip Default Bot", "default-bot@zulip.com"),
@@ -236,12 +231,7 @@ class Command(BaseCommand):
             for i in range(options["extra_bots"]):
                 zulip_realm_bots.append(('Extra Bot %d' % (i,), 'extrabot%d@zulip.com' % (i,)))
 
-            create_users(internal_realm, internal_realm_bots, bot_type=UserProfile.DEFAULT_BOT)
             create_users(zulip_realm, zulip_realm_bots, bot_type=UserProfile.DEFAULT_BOT)
-
-            # Initialize the email gateway bot as an API Super User
-            email_gateway_bot = get_system_bot(settings.EMAIL_GATEWAY_BOT)
-            do_change_is_admin(email_gateway_bot, True, permission="api_super_user")
 
             zoe = get_user("zoe@zulip.com", zulip_realm)
             zulip_webhook_bots = [
@@ -370,12 +360,7 @@ class Command(BaseCommand):
                                                                   hint="Or your personal blog's URL")
             mentor = try_add_realm_custom_profile_field(zulip_realm, "Mentor",
                                                         CustomProfileField.USER)
-            external_account_field_data = {
-                'subtype': 'github'
-            }  # type: ProfileFieldData
-            github_profile = try_add_realm_custom_profile_field(zulip_realm, "GitHub",
-                                                                CustomProfileField.EXTERNAL_ACCOUNT,
-                                                                field_data=external_account_field_data)
+            github_profile = try_add_realm_default_custom_profile_field(zulip_realm, "github")
 
             # Fill in values for Iago and Hamlet
             hamlet = get_user("hamlet@zulip.com", zulip_realm)
@@ -558,6 +543,20 @@ class Command(BaseCommand):
                 # development purpose only
                 call_command('populate_analytics_db')
             self.stdout.write("Successfully populated test database.\n")
+
+def create_internal_realm() -> None:
+    internal_realm = Realm.objects.create(string_id=settings.SYSTEM_BOT_REALM)
+
+    internal_realm_bots = [(bot['name'], bot['email_template'] % (settings.INTERNAL_BOT_DOMAIN,))
+                           for bot in settings.INTERNAL_BOTS]
+    internal_realm_bots += [
+        ("Zulip Feedback Bot", "feedback@zulip.com"),
+    ]
+    create_users(internal_realm, internal_realm_bots, bot_type=UserProfile.DEFAULT_BOT)
+
+    # Initialize the email gateway bot as an API Super User
+    email_gateway_bot = get_system_bot(settings.EMAIL_GATEWAY_BOT)
+    do_change_is_admin(email_gateway_bot, True, permission="api_super_user")
 
 recipient_hash = {}  # type: Dict[int, Recipient]
 def get_recipient_by_id(rid: int) -> Recipient:

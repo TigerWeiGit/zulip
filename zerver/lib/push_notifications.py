@@ -458,7 +458,8 @@ def get_gcm_alert(message: Message) -> str:
         return "New private group message from %s" % (sender_str,)
     elif message.recipient.type == Recipient.PERSONAL and message.trigger == 'private_message':
         return "New private message from %s" % (sender_str,)
-    elif message.is_stream_message() and message.trigger == 'mentioned':
+    elif message.is_stream_message() and (message.trigger == 'mentioned' or
+                                          message.trigger == 'wildcard_mentioned'):
         return "New mention from %s" % (sender_str,)
     else:  # message.is_stream_message() and message.trigger == 'stream_push_notify'
         return "New stream message from %s in %s" % (sender_str, get_display_recipient(message.recipient),)
@@ -488,15 +489,31 @@ def get_mobile_push_content(rendered_content: str) -> str:
         quote_text += '\n'
         return quote_text
 
+    def render_olist(ol: lxml.html.HtmlElement) -> str:
+        items = []
+        counter = int(ol.get('start')) if ol.get('start') else 1
+        nested_levels = len(list(ol.iterancestors('ol')))
+        indent = ('\n' + '  ' * nested_levels) if nested_levels else ''
+
+        for li in ol:
+            items.append(indent + str(counter) + '. ' + process(li).strip())
+            counter += 1
+
+        return '\n'.join(items)
+
     def process(elem: lxml.html.HtmlElement) -> str:
-        plain_text = get_text(elem)
-        sub_text = ''
-        for child in elem:
-            sub_text += process(child)
-        if elem.tag == 'blockquote':
-            sub_text = format_as_quote(sub_text)
-        plain_text += sub_text
-        plain_text += elem.tail or ""
+        plain_text = ''
+        if elem.tag == 'ol':
+            plain_text = render_olist(elem)
+        else:
+            plain_text = get_text(elem)
+            sub_text = ''
+            for child in elem:
+                sub_text += process(child)
+            if elem.tag == 'blockquote':
+                sub_text = format_as_quote(sub_text)
+            plain_text += sub_text
+            plain_text += elem.tail or ""
         return plain_text
 
     if settings.PUSH_NOTIFICATION_REDACT_CONTENT:
@@ -565,7 +582,9 @@ def get_apns_alert_subtitle(message: Message) -> str:
     On an iOS notification, this is the second bolded line.
     """
     if message.trigger == "mentioned":
-        return message.sender.full_name + " mentioned you:"
+        return _("%(full_name)s mentioned you:") % dict(full_name=message.sender.full_name)
+    elif message.trigger == "wildcard_mentioned":
+        return _("%(full_name)s mentioned everyone:") % dict(full_name=message.sender.full_name)
     elif message.recipient.type == Recipient.PERSONAL:
         return ""
     # For group PMs, or regular messages to a stream, just use a colon to indicate this is the sender.

@@ -9,13 +9,6 @@
 #
 --no-binary psycopg2
 
-git+https://github.com/zulip/libthumbor.git@60ed2431c07686a12f2770b2d852c5650f3ccfc6#egg=libthumbor==1.3.2zulip
-git+https://github.com/zulip/line_profiler.git#egg=line_profiler==2.1.2.zulip1
-git+https://github.com/zulip/talon.git@7d8bdc4dbcfcc5a73298747293b99fe53da55315#egg=talon==1.2.10.zulip1
-git+https://github.com/zulip/ultrajson@70ac02bec#egg=ujson==1.35+git
-git+https://github.com/zulip/zulint@9e0da9f6c9ffc617e0782ab69617f6bcf90a4271#egg=zulint==0.0.1
-git+https://github.com/zulip/python-zulip-api.git@0.6.1#egg=zulip==0.6.1_git&subdirectory=zulip
-git+https://github.com/zulip/python-zulip-api.git@0.6.1#egg=zulip_bots==0.6.1+git&subdirectory=zulip_bots
 alabaster==0.7.12         # via sphinx
 apns2==0.5.0
 argon2-cffi==19.1.0
@@ -38,7 +31,7 @@ cffi==1.12.3              # via argon2-cffi, cryptography
 cfn-lint==0.22.3          # via moto
 chardet==3.0.4            # via requests
 click==7.0                # via gitlint, pip-tools
-commonmark==0.5.4
+commonmark==0.9.0
 constantly==15.1.0        # via twisted
 coverage==4.5.3
 cryptography==2.6.1       # via apns2, moto, pyopenssl, requests, service-identity, sshpubkeys
@@ -58,12 +51,12 @@ django-sendfile2==0.4.2
 django-statsd-mozilla==0.4.0
 django-two-factor-auth==1.9.1
 django-webpack-loader==0.6.0
-django==1.11.22
+django==1.11.23
 docker==4.0.2             # via moto
 docutils==0.14            # via botocore, recommonmark, sphinx
 ecdsa==0.13.2             # via python-jose, sshpubkeys
 fakeldap==0.6.1
-first==2.0.2              # via pip-tools
+# future==0.17.1            # via commonmark, python-jose, python-twitter
 gitlint==0.12.0
 h2==2.6.2                 # via hyper
 hpack==3.0.0              # via h2
@@ -89,6 +82,8 @@ jsonpatch==1.23           # via cfn-lint
 jsonpickle==1.2           # via aws-xray-sdk, python-digitalocean
 jsonpointer==2.0          # via jsonpatch
 jsonschema==3.0.1         # via aws-sam-translator, cfn-lint
+git+https://github.com/zulip/libthumbor.git@60ed2431c07686a12f2770b2d852c5650f3ccfc6#egg=libthumbor==1.3.2zulip
+lp37==2.1.1
 lxml==4.3.4
 markdown-include==0.5.1
 markdown==3.1.1
@@ -107,7 +102,7 @@ phonenumberslite==8.10.15
 pickleshare==0.7.5        # via ipython
 pika==0.13.0
 pillow==6.1.0
-pip-tools==2.0.2
+pip-tools==4.1.0
 polib==1.1.0
 premailer==3.5.0
 prompt-toolkit==1.0.16    # via ipython
@@ -145,7 +140,7 @@ pytz==2019.1
 pyyaml==5.1.1             # via cfn-lint, moto, yamole
 qrcode==6.1               # via django-two-factor-auth
 queuelib==1.5.0           # via scrapy
-recommonmark==0.4.0
+recommonmark==0.5.0
 redis==3.2.1
 regex==2019.6.8
 requests-oauthlib==1.0.0  # via python-twitter, social-auth-core
@@ -170,16 +165,17 @@ sphinxcontrib-websupport==1.1.2  # via sphinx
 sqlalchemy==1.3.6
 sshpubkeys==3.1.0         # via moto
 statsd==3.3.0             # via django-statsd-mozilla
-stripe==2.21.0
+stripe==2.35.0
+git+https://github.com/zulip/talon.git@7d8bdc4dbcfcc5a73298747293b99fe53da55315#egg=talon==1.2.10.zulip1
 tblib==1.4.0
 tornado==4.5.3
 traitlets==4.3.2          # via ipython
 transifex-client==0.12.5
 twilio==6.29.2
-twisted==19.2.1
+twisted==19.7.0
 typed-ast==1.4.0          # via mypy
 typing-extensions==3.7.4
-typing==3.6.6
+git+https://github.com/zulip/ultrajson@70ac02bec#egg=ujson==1.35+git
 urllib3==1.25.3           # via botocore, requests, transifex-client
 virtualenv-clone==0.5.3
 w3lib==1.20.0             # via parsel, scrapy
@@ -190,3 +186,10 @@ wrapt==1.11.2             # via aws-xray-sdk
 xmltodict==0.12.0         # via moto
 yamole==2.1.6
 zope.interface==4.6.0     # via datetime, twisted
+git+https://github.com/zulip/zulint@aaed679f1ad38b230090eadd3870b7682500f60c#egg=zulint==0.0.1
+git+https://github.com/zulip/python-zulip-api.git@804501610b6a205334e71b4e441fca60acf650da#egg=zulip==0.6.1_git&subdirectory=zulip
+git+https://github.com/zulip/python-zulip-api.git@804501610b6a205334e71b4e441fca60acf650da#egg=zulip_bots==0.6.1+git&subdirectory=zulip_bots
+
+# The following packages are considered to be unsafe in a requirements file:
+pip==19.2.3
+setuptools==41.0.1        # via cfn-lint, ipython, jsonschema, markdown, pyhamcrest, sphinx, zope.interface
